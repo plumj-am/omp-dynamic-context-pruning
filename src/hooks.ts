@@ -64,10 +64,14 @@ function reconcileOmpCompaction(deps: HandlerDeps, entries: SessionEntry[]): voi
 }
 
 function cloneMessages(messages: AgentMessage[]): AgentMessage[] {
-  // Shallow-clone the array and each message object; content arrays are mutated
-  // in place on their blocks, so we also clone the content array reference per
-  // message. Block objects are mutated but that is the LLM-facing copy only.
-  return messages.map((m) => ({ ...m, content: Array.isArray(m.content) ? [...m.content] : m.content }));
+  // Deep-clone each message and its content blocks: prune / assignMessageRefs /
+  // nudge mutate block fields in place (block.text, block.content, tool_use
+  // input). omp may reuse block objects across calls, so we must not touch the
+  // originals — storage stays byte-for-byte intact.
+  return messages.map((m) => ({
+    ...m,
+    content: Array.isArray(m.content) ? m.content.map((b) => structuredClone(b)) : m.content,
+  }));
 }
 
 export function createContextMenuHandler(deps: HandlerDeps) {
