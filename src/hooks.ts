@@ -98,9 +98,8 @@ export function createContextMenuHandler(deps: HandlerDeps) {
 
     assignMessageRefs(deps.state, messages);
     const pruned = prune(deps.state, deps.logger, deps.config, messages);
-    // Stash the POST-prune array: it is exactly what the model sees, so
-    // positional range citation (m0001 = oldest visible message) aligns with
-    // what the compress tool resolves.
+    // Stash the POST-prune array: it is exactly what the model sees, so the
+    // content anchors the model quotes match what the compress tool resolves.
     deps.state.lastContextMessages = pruned;
 
     deps.counters.contextFetch += 1;

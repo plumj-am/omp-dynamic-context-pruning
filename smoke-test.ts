@@ -9,7 +9,7 @@ import { prune } from "./src/messages/prune";
 import { deduplicate } from "./src/strategies/deduplication";
 import { purgeErrors } from "./src/strategies/purge-errors";
 import { applyCompressionState, wrapCompressedSummary, allocateRunId, allocateBlockId } from "./src/state/utils";
-import { buildRangeContext, resolveRanges, validateNonOverlapping, validateSummaryPlaceholders, injectBlockPlaceholders, parseBlockPlaceholders } from "./src/compress/range-utils";
+import { buildRangeContext, resolveRanges, validateNonOverlapping, foldConsumedBlocks } from "./src/compress/range-utils";
 import { DEFAULT_CONFIG } from "./src/config";
 import { Logger } from "./src/logger";
 import { estimateMessagesTokens } from "./src/token-utils";
@@ -76,7 +76,7 @@ assert(/Output removed/.test(tr1.content[0].text), "pruned toolu_1 result replac
 // 4. NO inline tags — the leak fix. Messages must carry no <dcp-message-id>.
 assert(!/<dcp-message-id>/.test(JSON.stringify(pruned)), "no <dcp-message-id> tags leak into context");
 
-// 5-6. compression via POSITIONAL citation (m0001 = oldest visible message).
+// 5-6. compression via CONTENT ANCHORS (verbatim phrase substring match).
 state.prune.tools = new Map();
 state.prune.messages.byMessageId = new Map();
 state.prune.messages.blocksById = new Map();
@@ -84,23 +84,25 @@ state.prune.messages.activeBlockIds = new Set();
 state.prune.messages.activeByAnchorMessageId = new Map();
 
 const work = messages.map((m) => ({ ...m, content: m.content.map((b) => structuredClone(b)) }));
-assignMessageRefs(state, work); // builds positional ref map; does NOT mutate text
-assert(!/<dcp-message-id>/.test(JSON.stringify(work)), "assignMessageRefs injects no tags");
+assignMessageRefs(state, work); // no-op for citation now; kept for state consistency
+assert(!/<dcp-message-id>/.test(JSON.stringify(work)), "no tags injected into context");
 
 const ctx = buildRangeContext(work, state);
-// cite positions: m0002 (idx1, toolu_1 read) .. m0007 (idx6, errored result)
+// anchors: "config.json" (first read, idx1) .. "denied" (errored result, idx6)
 const args = {
   topic: "Initial exploration",
-  content: [{ startId: "m0002", endId: "m0007", summary: "Explored config.json; it has debug:true. A duplicate read and a failed rm were attempted." }],
+  content: [{ startAnchor: "config.json", endAnchor: "denied", summary: "Explored config.json; it has debug:true. A duplicate read and a failed rm were attempted." }],
 };
-const plans = resolveRanges(args, ctx, state);
+const plans = resolveRanges(args, ctx);
 validateNonOverlapping(plans);
+assert(plans[0].selection.startIndex === 1, "startAnchor located the first read message");
+assert(plans[0].selection.endIndex === 6, "endAnchor located the errored result");
 assert(plans[0].selection.messageIds.length >= 5, "range selection spans the expected messages");
 
 const runId = allocateRunId(state);
 const blockId = allocateBlockId(state);
 const stored = wrapCompressedSummary(blockId, plans[0].entry.summary);
-applyCompressionState(state, { topic: args.topic, batchTopic: args.topic, startId: "m0002", endId: "m0007", mode: "range", runId, summaryTokens: 30 }, plans[0].selection, plans[0].anchorMessageId, blockId, stored, plans[0].selection.requiredBlockIds);
+applyCompressionState(state, { topic: args.topic, batchTopic: args.topic, startId: plans[0].entry.startAnchor, endId: plans[0].entry.endAnchor, mode: "range", runId, summaryTokens: 30 }, plans[0].selection, plans[0].anchorMessageId, blockId, stored, plans[0].selection.requiredBlockIds);
 assert(state.prune.messages.activeBlockIds.size === 1, "one active compression block");
 
 // prune injects the summary (readable header) at the earliest effective message
@@ -113,22 +115,19 @@ assert(!/"debug.:.true/.test(rendered), "compressed span content elided");
 assert(!/<dcp-message-id>/.test(rendered), "pruned context has no dcp-message-id tags");
 console.log("\npruned2 tokens:", estimateMessagesTokens(pruned2));
 
-// 7. C4: nested compression citing the existing block (b1) by its header.
-//    The compress tool operates on the POST-prune array (= what the model sees).
+// 7. C4: nested compression that includes the prior summary, cited by content
+//    anchors. The prior block is auto-detected (header scan) and folded.
 state.lastContextMessages = pruned2;
 const nestedCtx = buildRangeContext(pruned2, state);
-const lastRef = `m${String(pruned2.length).padStart(4, "0")}`;
 const nestedArgs = {
   topic: "Wrap-up including prior block",
-  content: [{ startId: "b1", endId: lastRef, summary: "Final wrap-up that also references the earlier exploration block." }],
+  content: [{ startAnchor: "Explored config.json", endAnchor: "Done.", summary: "Final wrap-up that also covers the earlier exploration block." }],
 };
-const nestedPlans = resolveRanges(nestedArgs, nestedCtx, state);
+const nestedPlans = resolveRanges(nestedArgs, nestedCtx);
 validateNonOverlapping(nestedPlans);
-const nestedPlaceholders = parseBlockPlaceholders(nestedPlans[0].entry.summary);
-const nestedMissing = validateSummaryPlaceholders(nestedPlaceholders, nestedPlans[0].selection.requiredBlockIds, nestedPlans[0].selection.startReference, nestedPlans[0].selection.endReference, nestedCtx.summaryByBlockId);
-const nestedInjected = injectBlockPlaceholders(nestedPlans[0].entry.summary, nestedPlaceholders, nestedCtx.summaryByBlockId, nestedPlans[0].selection.startReference, nestedPlans[0].selection.endReference);
-assert(nestedInjected.consumedBlockIds.includes(1), "C4: boundary block b1 consumed by nested compression");
-assert(/Explored config\.json/.test(nestedInjected.expandedSummary), "C4: boundary block summary folded into new summary");
-assert(/Final wrap-up/.test(nestedInjected.expandedSummary), "C4: new summary body preserved alongside boundary");
-assert(nestedMissing.length === 0, "C4: no missing required blocks after boundary injection");
-console.log("C4 nested consumed:", nestedInjected.consumedBlockIds, "| missing:", nestedMissing);
+assert(nestedPlans[0].selection.requiredBlockIds.includes(1), "C4: prior block b1 auto-detected in cited range");
+const nestedFolded = foldConsumedBlocks(nestedPlans[0].entry.summary, nestedPlans[0].selection.requiredBlockIds, nestedCtx.summaryByBlockId);
+assert(nestedFolded.consumedBlockIds.includes(1), "C4: prior block b1 consumed/folded");
+assert(/Explored config\.json/.test(nestedFolded.expandedSummary), "C4: prior block summary folded into new summary");
+assert(/Final wrap-up/.test(nestedFolded.expandedSummary), "C4: new summary body preserved");
+console.log("C4 nested consumed:", nestedFolded.consumedBlockIds);

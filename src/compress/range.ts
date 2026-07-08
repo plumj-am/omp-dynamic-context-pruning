@@ -15,7 +15,7 @@ import { allocateBlockId, allocateRunId, applyCompressionState, wrapCompressedSu
 import { formatBlockRef } from "../messages/identity";
 import { countTokens } from "../token-utils";
 import { DEFAULT_PROTECTED_TOOLS } from "../config";
-import { appendMissingBlockSummaries, buildRangeContext, injectBlockPlaceholders, parseBlockPlaceholders, resolveRanges, validateArgs, validateNonOverlapping, validateSummaryPlaceholders } from "./range-utils";
+import { buildRangeContext, foldConsumedBlocks, resolveRanges, validateArgs, validateNonOverlapping } from "./range-utils";
 import { appendProtectedTools, appendProtectedPromptInfo, appendProtectedUserMessages } from "./protected-content";
 import { COMPRESS_RANGE_PROMPT, RANGE_FORMAT_EXTENSION } from "../prompts";
 import { saveSessionState } from "../state/persistence";
@@ -34,9 +34,9 @@ export function createCompressRangeTool(deps: CompressToolDeps): ToolDefinition 
     topic: zod.string({ description: "Short label (3-5 words) for display - e.g., 'Auth System Exploration'" }),
     content: zod.array(
       zod.object({
-        startId: zod.string({ description: "Message or block ID marking the beginning of range (e.g. m0001, b2)" }),
-        endId: zod.string({ description: "Message or block ID marking the end of range (e.g. m0012, b5)" }),
-        summary: zod.string({ description: "Complete technical summary replacing all content in range" }),
+        startAnchor: zod.string({ description: "A short verbatim phrase quoted from the FIRST message of the range (used to locate it)" }),
+        endAnchor: zod.string({ description: "A short verbatim phrase quoted from the LAST message of the range (used to locate it)" }),
+        summary: zod.string({ description: "Complete technical summary replacing all content in the range" }),
       }),
     ),
   });
@@ -47,7 +47,7 @@ export function createCompressRangeTool(deps: CompressToolDeps): ToolDefinition 
     description: COMPRESS_RANGE_PROMPT + RANGE_FORMAT_EXTENSION,
     parameters,
     async execute(toolCallId, params, _signal, _onUpdate, execCtx): Promise<ToolResult> {
-      const args = params as { topic: string; content: { startId: string; endId: string; summary: string }[] };
+      const args = params as { topic: string; content: { startAnchor: string; endAnchor: string; summary: string }[] };
       validateArgs(args);
 
       const messages = state.lastContextMessages;
@@ -56,7 +56,7 @@ export function createCompressRangeTool(deps: CompressToolDeps): ToolDefinition 
       }
 
       const rangeCtx = buildRangeContext(messages, state);
-      const plans = resolveRanges(args, rangeCtx, state);
+      const plans = resolveRanges(args, rangeCtx);
       validateNonOverlapping(plans);
 
       const protectedTools = new Set([...DEFAULT_PROTECTED_TOOLS, ...config.compress.protectedTools]);
@@ -65,33 +65,31 @@ export function createCompressRangeTool(deps: CompressToolDeps): ToolDefinition 
       let totalCompressed = 0;
 
       for (const plan of plans) {
-        const placeholders = parseBlockPlaceholders(plan.entry.summary);
-        const missing = validateSummaryPlaceholders(placeholders, plan.selection.requiredBlockIds, plan.selection.startReference, plan.selection.endReference, rangeCtx.summaryByBlockId);
-        const injected = injectBlockPlaceholders(plan.entry.summary, placeholders, rangeCtx.summaryByBlockId, plan.selection.startReference, plan.selection.endReference);
+        // Fold any prior compressed blocks whose summaries fall inside this range.
+        const folded = foldConsumedBlocks(plan.entry.summary, plan.selection.requiredBlockIds, rangeCtx.summaryByBlockId);
 
-        let summary = injected.expandedSummary;
+        let summary = folded.expandedSummary;
         summary = appendProtectedUserMessages(summary, plan.selection, rangeCtx, state, config.compress.protectUserMessages);
         summary = appendProtectedPromptInfo(summary, plan.selection, rangeCtx, state, config.compress.protectTags);
         summary = appendProtectedTools(summary, plan.selection, rangeCtx, state, [...protectedTools], config.protectedFilePatterns);
-        const completed = appendMissingBlockSummaries(summary, missing, rangeCtx.summaryByBlockId, injected.consumedBlockIds);
 
         const blockId = allocateBlockId(state);
-        const stored = wrapCompressedSummary(blockId, completed.expandedSummary);
+        const stored = wrapCompressedSummary(blockId, summary);
         const summaryTokens = countTokens(stored);
 
         const applied = applyCompressionState(
           state,
-          { topic: args.topic, batchTopic: args.topic, startId: plan.entry.startId, endId: plan.entry.endId, mode: "range", runId, compressCallId: toolCallId, summaryTokens },
+          { topic: args.topic, batchTopic: args.topic, startId: plan.entry.startAnchor, endId: plan.entry.endAnchor, mode: "range", runId, compressCallId: toolCallId, summaryTokens },
           plan.selection,
           plan.anchorMessageId,
           blockId,
           stored,
-          completed.consumedBlockIds,
+          folded.consumedBlockIds,
         );
 
         totalCompressed += applied.messageIds.length;
-        entries.push({ blockId, summary: completed.expandedSummary, summaryTokens, compressedTokens: applied.compressedTokens });
-        logger.info("Compressed range", { blockId, topic: args.topic, messages: applied.messageIds.length });
+        entries.push({ blockId, summary, summaryTokens, compressedTokens: applied.compressedTokens });
+        logger.info("Compressed range", { blockId, topic: args.topic, messages: applied.messageIds.length, anchors: [plan.entry.startAnchor.slice(0, 30), plan.entry.endAnchor.slice(0, 30)] });
       }
 
       persist();

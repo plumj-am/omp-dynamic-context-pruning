@@ -15,18 +15,18 @@ When to compress:
 - Prefer compressing whole coherent spans, not fragments.
 
 How to compress (range mode):
-- Number the messages in your current context starting at 1 from the OLDEST visible message. Cite a range with \`startId\` / \`endId\` as \`m\` + zero-padded position (e.g. the 12th message is \`m0012\`).
+- Cite a range by quoting a short, distinctive phrase **verbatim** from its first message (\`startAnchor\`) and its last message (\`endAnchor\`). Pick phrases unique enough to identify those messages — the tool locates them by substring match (whitespace- and case-insensitive).
 - Call \`compress\` with one or more ranges, each giving a \`summary\` you write yourself — a complete, faithful technical record of everything in that span (decisions, code changes, file paths, results, open questions). Future turns depend on this summary; be thorough.
-- A prior compressed span appears in your context as a single message beginning with \`[Compressed conversation section · b<N>]\`. To compress a range that includes or starts/ends on such a span, cite that block as \`b<N>\` (e.g. \`b2\`) and DCP nests the prior summary into yours.
+- A prior compressed span appears in your context as a single message beginning with \`[Compressed conversation section · b<N>]\`. To compress a range that includes it, just anchor your range before/after or on its text — the tool auto-detects and folds prior summaries into yours. You do not need to reference block ids.
 - Never compress across the current active turn or content you still need verbatim.
 
 The session history is never modified — compression only reshapes what is sent to you. Summaries replace spans in your context; the underlying record stays intact.`;
 
 /** The compress tool description shown in the tool list. */
-export const COMPRESS_RANGE_PROMPT = `Compress one or more ranges of the conversation into technical summaries, replacing the verbatim spans in context. You author each summary yourself. Cite range boundaries as positional message refs \`m0001\` (m + zero-padded 1-based position, oldest message = m0001) or as a compressed-block ref \`b#\` (the number from a \`[Compressed conversation section · b#]\` header). Write summaries that fully preserve decisions, code changes, file paths, and outcomes — they are the only record future turns will have of the compressed span.`;
+export const COMPRESS_RANGE_PROMPT = `Compress one or more ranges of the conversation into technical summaries, replacing the verbatim spans in context. You author each summary yourself. Cite each range with a startAnchor and endAnchor — short verbatim phrases quoted from the first and last messages of the range (the tool locates them by substring match). Write summaries that fully preserve decisions, code changes, file paths, and outcomes — they are the only record future turns will have of the compressed span.`;
 
 /** Format help appended to the tool description. */
-export const RANGE_FORMAT_EXTENSION = `\n\nBoundary format: \`m0001\` = the 1st (oldest) message in your current context; \`b#\` = a prior compressed block (from its \`[Compressed conversation section · b#]\` header). A range may fully contain earlier compressed blocks; DCP nests them into your summary automatically.`;
+export const RANGE_FORMAT_EXTENSION = `\n\nAnchors: quote 3-30 word phrases that appear verbatim in the target messages (matched case- and whitespace-insensitively). Choose distinctive phrases — avoid generic text that recurs. Prior compressed sections (their \`[Compressed conversation section · b#]\` messages) inside a cited range are detected and folded automatically.`;
 
 /** Strong nudge when context exceeds maxContextLimit. */
 export const CONTEXT_LIMIT_NUDGE = `[context is near capacity — consider calling the compress tool to summarize completed, no-longer-needed spans before continuing]`;
