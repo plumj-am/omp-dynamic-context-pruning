@@ -12,7 +12,7 @@ import type { PluginConfig } from "../config";
 import type { Logger } from "../logger";
 import type { SessionState } from "../state/types";
 import { allocateBlockId, allocateRunId, applyCompressionState, wrapCompressedSummary } from "../state/utils";
-import { formatBlockRef, formatMessageIdTag } from "../messages/identity";
+import { formatBlockRef } from "../messages/identity";
 import { countTokens } from "../token-utils";
 import { DEFAULT_PROTECTED_TOOLS } from "../config";
 import { appendMissingBlockSummaries, buildRangeContext, injectBlockPlaceholders, parseBlockPlaceholders, resolveRanges, validateArgs, validateNonOverlapping, validateSummaryPlaceholders } from "./range-utils";
@@ -76,7 +76,7 @@ export function createCompressRangeTool(deps: CompressToolDeps): ToolDefinition 
         const completed = appendMissingBlockSummaries(summary, missing, rangeCtx.summaryByBlockId, injected.consumedBlockIds);
 
         const blockId = allocateBlockId(state);
-        const stored = wrapCompressedSummary(blockId, completed.expandedSummary, formatBlockRef, formatMessageIdTag);
+        const stored = wrapCompressedSummary(blockId, completed.expandedSummary);
         const summaryTokens = countTokens(stored);
 
         const applied = applyCompressionState(

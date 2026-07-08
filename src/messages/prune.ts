@@ -36,42 +36,61 @@ export function prune(state: SessionState, logger: Logger, config: PluginConfig,
 
 function filterCompressedRanges(state: SessionState, logger: Logger, messages: AgentMessage[]): AgentMessage[] {
   const messagesState = state.prune.messages;
-  const hasWork =
-    messagesState.byMessageId.size > 0 || messagesState.activeByAnchorMessageId.size > 0;
-  if (!hasWork) return messages;
+  if (messagesState.activeBlockIds.size === 0) return messages;
 
   const identities = computeIdentities(messages, state.isSubAgent);
+  const identityToIndex = new Map<string, number>();
+  for (let i = 0; i < identities.length; i++) {
+    if (identities[i]) identityToIndex.set(identities[i], i);
+  }
+
+  const activeBlocks = [];
+  for (const id of messagesState.activeBlockIds) {
+    const block = messagesState.blocksById.get(id);
+    if (block && block.active && typeof block.summary === "string" && block.summary.length > 0) {
+      activeBlocks.push(block);
+    }
+  }
+  if (activeBlocks.length === 0) return messages;
+
+  // Identities elided by any active block (the original messages it covers).
+  const elidedIds = new Set<string>();
+  for (const block of activeBlocks) {
+    for (const id of block.effectiveMessageIds) elidedIds.add(id);
+  }
+
+  // For each active block, inject its summary just before the earliest of its
+  // effective messages still present in the current context. effective ids are
+  // stable (original message identities), so this re-matches every pass.
+  const injectBefore = new Map<string, number>(); // identity -> blockId
+  for (const block of activeBlocks) {
+    let earliest = Infinity;
+    for (const id of block.effectiveMessageIds) {
+      const idx = identityToIndex.get(id);
+      if (idx !== undefined && idx < earliest) earliest = idx;
+    }
+    if (earliest !== Infinity) {
+      const identityAtEarliest = identities[earliest];
+      if (identityAtEarliest && !injectBefore.has(identityAtEarliest)) {
+        injectBefore.set(identityAtEarliest, block.blockId);
+      }
+    } else {
+      logger.warn("Compression block has no effective messages in context", { blockId: block.blockId });
+    }
+  }
+
   const result: AgentMessage[] = [];
-
   for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
     const identity = identities[i];
-
-    // If this message is an anchor for an active summary, inject the summary.
-    if (identity) {
-      const blockId = messagesState.activeByAnchorMessageId.get(identity);
-      const block = blockId !== undefined ? messagesState.blocksById.get(blockId) : undefined;
+    if (identity && injectBefore.has(identity)) {
+      const block = messagesState.blocksById.get(injectBefore.get(identity)!);
       if (block) {
-        if (!block.active || typeof block.summary !== "string" || block.summary.length === 0) {
-          logger.warn("Skipping malformed compress summary", { anchorMessageId: identity, blockId });
-        } else {
-          const anchorPruned = isMessageCompacted(state, identity);
-          if (anchorPruned) {
-            // anchor is inside the compressed range: replace it with the summary
-            result.push(syntheticSummary(block.summary));
-          } else {
-            // anchor precedes the range: prepend the summary, keep the message
-            result.push(prependSummary(msg, block.summary));
-          }
-          logger.debug("Injected compress summary", { anchorMessageId: identity });
-        }
+        result.push(syntheticSummary(block.summary));
+        logger.debug("Injected compress summary", { blockId: block.blockId });
       }
     }
-
-    // Drop messages that belong to an active compression block.
-    if (identity && isMessageCompacted(state, identity)) continue;
-
-    result.push(msg);
+    if (identity && elidedIds.has(identity)) continue; // elided by an active block
+    result.push(messages[i]);
   }
 
   return result;
@@ -82,12 +101,6 @@ function syntheticSummary(summary: string): AgentMessage {
     role: "user",
     content: [{ type: "text", text: summary } satisfies ContentBlock],
   };
-}
-
-function prependSummary(msg: AgentMessage, summary: string): AgentMessage {
-  // shallow clone + new content array so we never mutate the shared message
-  const clone: AgentMessage = { ...msg, content: [{ type: "text", text: summary } satisfies ContentBlock, ...(Array.isArray(msg.content) ? msg.content : [])] };
-  return clone;
 }
 
 function pruneToolOutputs(state: SessionState, messages: AgentMessage[]): void {

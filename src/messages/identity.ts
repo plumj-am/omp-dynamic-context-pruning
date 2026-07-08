@@ -158,18 +158,19 @@ export function computeIdentities(messages: AgentMessage[], isSubAgent: boolean)
 }
 
 /**
- * Assign m-refs to messages in order, stash ref→identity in state, and inject
- * the `<dcp-message-id>` tag into each message's last text block. Returns the
- * number of newly-assigned refs.
+ * Build the positional ref→identity map (m0001 = oldest message, m0002 = next,
+ * …) and stash it in state for the compress tool to resolve model-cited ranges.
  *
- * Mutates `messages` (the LLM-facing copy) to inject tags — storage is
- * untouched.
+ * IMPORTANT: no tags are injected into message text. An earlier version
+ * appended `<dcp-message-id>` tags inline, but omp surfaces the context-hook
+ * output into the display transcript, so the tags leaked to the user and
+ * accumulated across turns. The model now cites ranges by positional count
+ * (described in the compress prompt) — zero leakage, no accumulation.
+ *
+ * Does NOT mutate `messages`.
  */
 export function assignMessageRefs(state: SessionState, messages: AgentMessage[]): number {
   const identities = computeIdentities(messages, state.isSubAgent);
-  // Reset the ref→identity map each pass: refs are positional and must reflect
-  // the current context array exactly. (Identity stays stable across passes;
-  // compression blocks key on identity, so a rebuild re-matches correctly.)
   state.messageIds.byRef = new Map();
   state.messageIds.byRawId = new Map();
   state.messageIds.nextRef = 1;
@@ -184,28 +185,10 @@ export function assignMessageRefs(state: SessionState, messages: AgentMessage[])
     const ref = formatMessageRef(refIndex);
     state.messageIds.byRef.set(ref, identity);
     state.messageIds.byRawId.set(identity, ref);
-    injectRefTag(messages[i], ref);
     assigned += 1;
   }
   state.messageIds.nextRef = refIndex + 1;
   return assigned;
-}
-
-function injectRefTag(msg: AgentMessage, ref: string): void {
-  const tag = formatMessageIdTag(ref);
-  if (!Array.isArray(msg.content)) {
-    msg.content = [{ type: "text", text: tag } satisfies ContentBlock];
-    return;
-  }
-  // append to the last text block if present, else add a text block
-  for (let j = msg.content.length - 1; j >= 0; j--) {
-    const b = msg.content[j];
-    if (isTextBlock(b)) {
-      b.text = `${b.text}${tag}`;
-      return;
-    }
-  }
-  msg.content.push({ type: "text", text: tag } satisfies ContentBlock);
 }
 
 /** Resolve a model-supplied ref (m0001 / b2) to an identity, using stashed map. */

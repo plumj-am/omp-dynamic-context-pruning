@@ -28,13 +28,16 @@ export function allocateRunId(state: SessionState): number {
 }
 
 /**
- * Wrap a model-authored summary with the canonical DCP header and a trailing
- * block-ref tag (e.g. `<dcp-message-id>b2</dcp-message-id>`).
+ * Wrap a model-authored summary with a readable header carrying the block id
+ * (e.g. `[Compressed conversation section · b2]`). The id in the header is how
+ * the model cites the block for nesting — no `<dcp-message-id>` XML tags are
+ * used anywhere, because omp surfaces context-hook output into the display and
+ * those tags leaked to the user.
  */
-export function wrapCompressedSummary(blockId: number, summary: string, formatBlockRef: (n: number) => string, formatIdTag: (ref: string) => string): string {
+export function wrapCompressedSummary(blockId: number, summary: string): string {
   const body = summary.trim();
-  const footer = formatIdTag(formatBlockRef(blockId));
-  return body.length === 0 ? `${COMPRESSED_BLOCK_HEADER}\n${footer}` : `${COMPRESSED_BLOCK_HEADER}\n${body}\n\n${footer}`;
+  const header = `[Compressed conversation section · b${blockId}]`;
+  return body.length === 0 ? header : `${header}\n${body}`;
 }
 
 /**

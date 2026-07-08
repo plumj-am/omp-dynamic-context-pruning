@@ -81,22 +81,41 @@ export function buildRangeContext(messages: AgentMessage[], state: SessionState)
 
 function resolveBoundary(ctx: RangeContext, state: SessionState, id: string): BoundaryReference {
   const parsed = parseBoundaryId(id);
-  if (!parsed) throw new Error(`Unrecognized boundary id: "${id}". Use m#### or b# form.`);
+  if (!parsed) throw new Error(`Unrecognized boundary id: "${id}". Use m#### (position) or b# (compressed block) form.`);
 
   if (parsed.kind === "compressed-block") {
-    const block = state.prune.messages.blocksById.get(parsed.blockId);
-    if (!block) throw new Error(`Compressed block ${parsed.ref} does not exist`);
-    const idx = ctx.identityToIndex.get(block.anchorMessageId);
-    if (idx === undefined) throw new Error(`Compressed block ${parsed.ref} anchor is not in the current context`);
+    // Locate the block's summary message in the current (post-prune) context by
+    // its readable header `[Compressed conversation section · b#]`.
+    const idx = findBlockHeaderIndex(ctx, parsed.blockId);
+    if (idx === undefined) throw new Error(`Compressed block ${parsed.ref} is not present in the current context`);
     return { kind: "compressed-block", blockId: parsed.blockId, rawIndex: idx };
   }
 
-  // message ref → identity → index
-  const identity = state.messageIds.byRef.get(parsed.ref);
-  if (!identity) throw new Error(`Message ref ${parsed.ref} is not in the current context`);
-  const idx = ctx.identityToIndex.get(identity);
-  if (idx === undefined) throw new Error(`Message ${parsed.ref} (${identity}) is not in the current context`);
-  return { kind: "message", identity, rawIndex: idx };
+  // Positional message ref: m000K → the K-th message (1-based) in the context
+  // the model sees. Aligned because the compress tool operates on the post-prune
+  // array stashed as lastContextMessages.
+  const rawIndex = parsed.index - 1;
+  if (rawIndex < 0 || rawIndex >= ctx.messages.length) {
+    throw new Error(`Message ref ${parsed.ref} is out of range (context has ${ctx.messages.length} message(s))`);
+  }
+  const identity = ctx.identities[rawIndex] ?? `pos:${rawIndex}`;
+  return { kind: "message", identity, rawIndex };
+}
+
+/** Find the index of the synthetic message carrying block `blockId`'s summary header. */
+function findBlockHeaderIndex(ctx: RangeContext, blockId: number): number | undefined {
+  const needle = `· b${blockId}]`;
+  for (let i = 0; i < ctx.messages.length; i++) {
+    const msg = ctx.messages[i];
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (typeof block === "object" && block !== null && "type" in block && (block as { type: unknown }).type === "text") {
+        const t = (block as { text?: unknown }).text;
+        if (typeof t === "string" && t.includes("[Compressed conversation section") && t.includes(needle)) return i;
+      }
+    }
+  }
+  return undefined;
 }
 
 function resolveSelection(ctx: RangeContext, start: BoundaryReference, end: BoundaryReference): SelectionResolution {
@@ -117,12 +136,13 @@ function resolveSelection(ctx: RangeContext, start: BoundaryReference, end: Boun
     if (ids) for (const id of ids) if (!toolIds.includes(id)) toolIds.push(id);
   }
 
-  // Prior compressed blocks whose anchor falls inside the range are consumed by it.
+  // Prior compressed blocks whose summary header appears inside the cited range
+  // are consumed by it. Detected by the readable header, since the post-prune
+  // context carries summaries (not the original anchor messages).
   const requiredBlockIds: number[] = [];
-  for (const [blockId, block] of ctx.summaryByBlockId) {
-    if (messageIdSet.has(block.anchorMessageId) && !requiredBlockIds.includes(blockId)) {
-      requiredBlockIds.push(blockId);
-    }
+  for (let i = from; i <= to; i++) {
+    const headers = blockHeadersIn(ctx.messages[i]);
+    for (const blockId of headers) if (!requiredBlockIds.includes(blockId)) requiredBlockIds.push(blockId);
   }
 
   return { messageIds, toolIds, messageTokenById, requiredBlockIds, startReference: start, endReference: end };
@@ -267,12 +287,28 @@ export function appendMissingBlockSummaries(
   return { expandedSummary: summary + heading + missing.join(""), consumedBlockIds: consumed };
 }
 
-/** Strip the `[Compressed conversation section]` header and trailing block tag. */
+/** Strip the `[Compressed conversation section · b#]` header (no XML tags). */
 function restoreSummary(summary: string): string {
-  const headerMatch = summary.match(/^\s*\[Compressed conversation(?: section)?(?: b\d+)?\]/i);
+  const headerMatch = summary.match(/^\s*\[Compressed conversation section(?: · b\d+)?\]/i);
   if (!headerMatch) return summary;
-  const after = summary.slice(headerMatch[0].length).replace(/^(?:\r?\n)+/, "");
-  return after.replace(/(?:\r?\n)*<dcp-message-id>b\d+<\/dcp-message-id>\s*$/i, "").replace(/(?:\r?\n)+$/, "");
+  return summary.slice(headerMatch[0].length).replace(/^(?:\r?\n)+/, "").replace(/(?:\r?\n)+$/, "");
+}
+
+/** Parse block ids mentioned in a message's `[Compressed conversation section · b#]` headers. */
+function blockHeadersIn(msg: AgentMessage): number[] {
+  const ids: number[] = [];
+  if (!Array.isArray(msg.content)) return ids;
+  for (const block of msg.content) {
+    if (typeof block !== "object" || block === null) continue;
+    if (!("type" in block) || (block as { type: unknown }).type !== "text") continue;
+    const t = (block as { text?: unknown }).text;
+    if (typeof t !== "string") continue;
+    for (const m of t.matchAll(/\[Compressed conversation section · b(\d+)\]/gi)) {
+      const id = Number.parseInt(m[1] ?? "", 10);
+      if (Number.isInteger(id) && !ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
 }
 
 /**

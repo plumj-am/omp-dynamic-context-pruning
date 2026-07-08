@@ -97,10 +97,11 @@ export function createContextMenuHandler(deps: HandlerDeps) {
     purgeErrors(deps.state, deps.config, deps.logger);
 
     assignMessageRefs(deps.state, messages);
-    // stash the ref-tagged, pre-prune copy for the compress tool to resolve ranges
-    deps.state.lastContextMessages = messages;
-
     const pruned = prune(deps.state, deps.logger, deps.config, messages);
+    // Stash the POST-prune array: it is exactly what the model sees, so
+    // positional range citation (m0001 = oldest visible message) aligns with
+    // what the compress tool resolves.
+    deps.state.lastContextMessages = pruned;
 
     deps.counters.contextFetch += 1;
     injectCompressNudges(deps.state, deps.config, estimateMessagesTokens(pruned), pruned, deps.counters.contextFetch);

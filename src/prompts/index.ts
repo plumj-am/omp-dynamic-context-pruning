@@ -15,18 +15,18 @@ When to compress:
 - Prefer compressing whole coherent spans, not fragments.
 
 How to compress (range mode):
-- Each conversation message carries a trailing \`<dcp-message-id>m####</dcp-message-id>\` tag. Compressed spans carry \`<dcp-message-id>b#</dcp-message-id>\`.
-- Call \`compress\` with one or more ranges, each giving \`startId\` / \`endId\` (m#### or b# refs) and a \`summary\` you write yourself — a complete, faithful technical record of everything in that span (decisions, code changes, file paths, results, open questions). Future turns depend on this summary; be thorough.
-- If a range fully contains an earlier compressed block, reference it inline as \`(b#)\` and DCP nests the prior summary into yours.
+- Number the messages in your current context starting at 1 from the OLDEST visible message. Cite a range with \`startId\` / \`endId\` as \`m\` + zero-padded position (e.g. the 12th message is \`m0012\`).
+- Call \`compress\` with one or more ranges, each giving a \`summary\` you write yourself — a complete, faithful technical record of everything in that span (decisions, code changes, file paths, results, open questions). Future turns depend on this summary; be thorough.
+- A prior compressed span appears in your context as a single message beginning with \`[Compressed conversation section · b<N>]\`. To compress a range that includes or starts/ends on such a span, cite that block as \`b<N>\` (e.g. \`b2\`) and DCP nests the prior summary into yours.
 - Never compress across the current active turn or content you still need verbatim.
 
 The session history is never modified — compression only reshapes what is sent to you. Summaries replace spans in your context; the underlying record stays intact.`;
 
 /** The compress tool description shown in the tool list. */
-export const COMPRESS_RANGE_PROMPT = `Compress one or more ranges of the conversation into technical summaries, replacing the verbatim spans in context. You author each summary yourself. Each message in the conversation is tagged with a <dcp-message-id>m####</dcp-message-id> identifier and prior compressions with <dcp-message-id>b#</dcp-message-id>; cite those as range boundaries. Write summaries that fully preserve decisions, code changes, file paths, and outcomes — they are the only record future turns will have of the compressed span.`;
+export const COMPRESS_RANGE_PROMPT = `Compress one or more ranges of the conversation into technical summaries, replacing the verbatim spans in context. You author each summary yourself. Cite range boundaries as positional message refs \`m0001\` (m + zero-padded 1-based position, oldest message = m0001) or as a compressed-block ref \`b#\` (the number from a \`[Compressed conversation section · b#]\` header). Write summaries that fully preserve decisions, code changes, file paths, and outcomes — they are the only record future turns will have of the compressed span.`;
 
 /** Format help appended to the tool description. */
-export const RANGE_FORMAT_EXTENSION = `\n\nBoundary format: use m#### (e.g. m0003) for a conversation message, or b# (e.g. b2) for an existing compressed block. A range may fully contain earlier compressed blocks; reference them inline as (b#) in your summary and they will be nested automatically.`;
+export const RANGE_FORMAT_EXTENSION = `\n\nBoundary format: \`m0001\` = the 1st (oldest) message in your current context; \`b#\` = a prior compressed block (from its \`[Compressed conversation section · b#]\` header). A range may fully contain earlier compressed blocks; DCP nests them into your summary automatically.`;
 
 /** Strong nudge when context exceeds maxContextLimit. */
 export const CONTEXT_LIMIT_NUDGE = `[context is near capacity — consider calling the compress tool to summarize completed, no-longer-needed spans before continuing]`;
