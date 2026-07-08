@@ -61,16 +61,28 @@ This identity is stable across context rebuilds because omp never mutates
 `tool_use.id`, `tool_use.input`, user text, or assistant text — it only prunes
 `tool_result` *content*, which is excluded from the signature.
 
-Flow (mirrors DCP's `state.messageIds.byRef`):
+Flow (content anchors — see "Why not tags" below):
 
-1. `context` handler builds `ref (m0001) → identity` in deterministic order,
-   stashes the map in session state, and injects `<dcp-message-id>mNNNN</...>`
-   tags so the model can cite ranges.
-2. Model calls `compress({ ranges: [{ startId: "m0003", endId: "m0007", summary }] })`.
-3. Compress tool resolves the model's m-refs to identities via the stashed map,
-   stores a compression block keyed by those identities.
-4. Future `context` passes recompute identities, elide messages belonging to an
-   active compression block, and inject the summary at the range anchor.
+1. Model calls `compress({ content: [{ startAnchor, endAnchor, summary }] })`,
+   quoting short verbatim phrases from the first / last message of the range.
+2. Compress tool substring-matches each anchor (whitespace- and
+   case-normalized) to a message, resolves the span, and stores a compression
+   block keyed by the span's message identities + tool ids.
+3. Future `context` passes recompute identities, elide messages belonging to an
+   active compression block, and inject the summary at the earliest effective
+   message.
+
+## Why not per-message tags (an omp constraint)
+
+Upstream DCP tags every message with `<dcp-message-id>m####</dcp-message-id>`
+and strips hallucinated tags via a `text.complete` hook. **omp has no
+output-mutation hook** — every `message_*` lifecycle event is notification-only
+(verified in `pi-coding-agent/src/extensibility/extensions/types.ts`). So
+tag injection is unsafe here: the model imitates the tag pattern into its own
+output, which is then persisted and displayed with no way to strip it. Content
+anchors inject nothing, so there is nothing to imitate. The `context` event
+itself is LLM-only (verified in `pi-agent-core/src/agent-loop.ts`: transform
+output flows to `llmMessages` and is never written back to storage/display).
 
 ## Modules
 

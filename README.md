@@ -1,44 +1,65 @@
-# DCP for omp
+# omp-dynamic-context-pruning
 
 Dynamic Context Pruning for [Oh My Pi (omp)](https://omp.ai), modeled on
 [Opencode-DCP/opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning).
 
-Automatically reduces token usage by managing conversation context — **without
-ever modifying your session history**. Pruned content is replaced with
-placeholders or summaries only in the copy sent to the LLM; the persisted
-session stays byte-for-byte intact.
+It shrinks what gets sent to the LLM by **compressing closed stretches of
+conversation into summaries** and **pruning superseded / errored tool output** —
+**without ever modifying your session history**. All transforms happen on the
+copy of the conversation bound for the LLM; the persisted session stays
+byte-for-byte intact.
+
+Because omp counts context from the provider's real prompt-token report, the
+savings are real: the context bar drops and omp's auto-compaction is deferred.
 
 ## What it does
 
-- **`compress` tool** — a tool the model can call to replace closed, stale
-  stretches of conversation with a high-fidelity technical summary *it writes
-  itself*. Surgical and lossless-by-design: protected tool outputs and protected
-  file operations are appended into the summary automatically, and nested
-  compressions are preserved through layers.
+- **`compress` tool** — the model calls it to replace a finished span with a
+  high-fidelity technical summary **it writes itself**. Surgical and
+  lossless-by-design: protected tool outputs and protected file operations are
+  appended into the summary automatically, and nested compressions are folded
+  through layers.
 - **Deduplication** — drops older tool calls that repeat the same tool + args,
   keeping only the most recent output.
 - **Purge-errors** — blanks the (potentially large) inputs of errored tool calls
-  after a configurable number of turns; the error message is preserved.
+  after a configurable number of turns; the error message itself is preserved.
 - **Context nudges** — short, non-repeating reminders to compress when context
   approaches capacity.
 
 ## How it works
 
-Every provider request fires omp's `context` event. DCP clones the messages and,
-on that clone only:
+Every provider request fires omp's `context` event (confirmed LLM-only in
+`pi-agent-core/src/agent-loop.ts` — the transform output goes to the provider
+and is never written back to storage or the display transcript). On a clone of
+the messages, DCP:
 
 1. rebuilds tool metadata (correlating `tool_use` ↔ `tool_result`),
 2. runs deduplication + purge-errors (marking tool ids to blank),
-3. assigns stable `m0001`/`b2` refs and injects `<dcp-message-id>` tags so the
-   model can cite ranges,
-4. replaces superseded/errored tool content with placeholders and injects
-   compression summaries at their anchors,
-5. injects a compress nudge when thresholds are crossed.
+3. replaces superseded/errored tool content with placeholders and injects
+   compression summaries in place of their spans,
+4. injects a compress nudge when thresholds are crossed.
 
-Storage is never touched. When the model calls `compress`, it authors the
-summary; DCP validates the cited range, nests any prior compressions inside it,
-appends protected content, and stores a compression block in session state
-(persisted via omp custom entries, reconstructed on session resume).
+When the model calls `compress`, it authors the summary; DCP locates the cited
+range, folds any prior compressions nested inside, appends protected content,
+and stores a compression block in session state (persisted via omp custom
+entries, reconstructed on session resume).
+
+### Range citation: content anchors (an omp-specific design choice)
+
+Upstream DCP tags every message with `<dcp-message-id>m####</dcp-message-id>` so
+the model can cite ranges by stable id. **That does not work in omp.** omp has
+no hook to mutate assistant output before it is persisted/displayed (all
+`message_*` lifecycle events are notification-only), so upstream's
+`stripHallucinations` defense is unavailable — and any visible tag pattern gets
+imitated by the model into its own output, polluting the transcript.
+
+So this port uses **content anchors**: the model cites a range by quoting a
+short verbatim phrase from its first message (`startAnchor`) and its last
+(`endAnchor`). DCP locates each anchor by substring match (whitespace- and
+case-insensitive) and takes the span between them. **Nothing is injected into
+context**, so there is nothing for the model to imitate. Prior compressed
+sections inside a cited range are auto-detected by their
+`[Compressed conversation section · b#]` header and folded.
 
 ## Installation
 
@@ -48,10 +69,11 @@ This is a source extension (a directory with `package.json` declaring
 ```yaml
 # ~/.omp/agent/config.yml   (or <project>/.omp/config.yml)
 extensions:
-  - D:/_omp_plugin/dcp
+  - /path/to/omp-dynamic-context-pruning
 ```
 
-Restart omp. You should see `Dynamic Context Pruning` in the loaded extensions.
+Restart omp. You should see `Dynamic Context Pruning` among the loaded
+extensions, a `compress` tool available to the model, and the `/dcp` commands.
 
 ## Configuration
 
@@ -114,26 +136,42 @@ under `~/.omp/agent/logs/dcp/`.
 
 ## Faithfulness to upstream DCP
 
-This is a port of DCP's *core* to omp's extension API. Implemented: the `context`
-transform (the heart), the `compress` tool (range mode), deduplication,
-purge-errors, system-prompt/nudge injection, protected tools + file patterns,
-protected-content append, the config system, state persistence, and slash
-commands.
+A port of DCP's *core* to omp's extension API. Implemented: the `context`
+transform (the heart), the `compress` tool (range mode, content anchors),
+deduplication, purge-errors, system-prompt/nudge injection, protected tools +
+file patterns, protected-content append, compress notifications, the config
+system, state persistence, and slash commands.
 
-Deferred (documented, not silently dropped):
+Deliberately different from upstream (driven by omp's architecture, documented
+here so the divergence is visible):
+
+- **Content anchors instead of `<dcp-message-id>` tags** — omp has no
+  output-mutation hook, so tag injection would pollute the transcript. See
+  *Range citation* above.
+- **No per-compress permission prompt** — omp's approval model differs; auto.
+- **No subagent-result extension** — subagents are out of scope
+  (`experimental.allowSubAgents` defaults false).
+
+Not yet ported (the state model supports adding them without redesign):
 
 - **`message` compress mode** — experimental upstream; range mode is the
-  production default. The state model supports adding it later without redesign.
-- **TUI panel** — OpenCode's panel system is host-specific; the `/dcp` commands
+  production default.
+- **TUI panel** — OpenCode's panel system is host-specific; `/dcp` commands
   cover the same surface.
-- **npm auto-update** — the plugin is source-installed; update by pulling.
-- **`/dcp sweep`, `recompress`, `decompress`** — secondary commands; the state
-  model already supports them.
+- **`/dcp sweep`, `recompress`, `decompress`** — secondary commands.
 
 See [`docs/design.md`](./docs/design.md) for the full architecture, the
-OpenCode→omp API mapping, and the message-identity design (omp messages carry no
-stable id, so identity is derived from `tool_use.id` + content signatures).
+OpenCode → omp API mapping, and the message-identity design (omp messages carry
+no stable id, so identity is derived from `tool_use.id` + content signatures).
+
+## Verification
+
+- `bunx tsc --noEmit` — type-checks clean.
+- `bun smoke-test.ts` — exercises the full pipeline (dedup, purge-errors,
+  placeholder pruning, content-anchor range resolution, compression-block
+  storage, summary injection, nested-block folding) against synthetic omp
+  messages.
 
 ## License
 
-AGPL-3.0-or-later, matching upstream DCP.
+AGPL-3.0-or-later, matching upstream DCP. See [`LICENSE`](./LICENSE).
