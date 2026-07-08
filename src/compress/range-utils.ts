@@ -105,17 +105,27 @@ function resolveSelection(ctx: RangeContext, start: BoundaryReference, end: Boun
   const messageIds: string[] = [];
   const toolIds: string[] = [];
   const messageTokenById = new Map<string, number>();
+  const messageIdSet = new Set<string>();
 
   for (let i = from; i <= to; i++) {
     const identity = ctx.identities[i];
     if (!identity) continue;
     messageIds.push(identity);
+    messageIdSet.add(identity);
     messageTokenById.set(identity, estimateMessageTokens(ctx.messages[i]));
     const ids = ctx.toolUseIdsByIdentity.get(identity);
     if (ids) for (const id of ids) if (!toolIds.includes(id)) toolIds.push(id);
   }
 
-  return { messageIds, toolIds, messageTokenById, startReference: start, endReference: end };
+  // Prior compressed blocks whose anchor falls inside the range are consumed by it.
+  const requiredBlockIds: number[] = [];
+  for (const [blockId, block] of ctx.summaryByBlockId) {
+    if (messageIdSet.has(block.anchorMessageId) && !requiredBlockIds.includes(blockId)) {
+      requiredBlockIds.push(blockId);
+    }
+  }
+
+  return { messageIds, toolIds, messageTokenById, requiredBlockIds, startReference: start, endReference: end };
 }
 
 function resolveAnchorMessageId(ctx: RangeContext, start: BoundaryReference): string {
@@ -183,25 +193,56 @@ export function injectBlockPlaceholders(
   summary: string,
   placeholders: ParsedBlockPlaceholder[],
   summaryByBlockId: Map<number, CompressionBlock>,
-  consumed: number[],
+  startReference: BoundaryReference,
+  endReference: BoundaryReference,
 ): InjectedSummaryResult {
-  if (placeholders.length === 0) return { expandedSummary: summary, consumedBlockIds: consumed };
-  const consumedSeen = new Set(consumed);
-  let cursor = 0;
-  let expanded = "";
-  for (const placeholder of placeholders) {
-    const target = summaryByBlockId.get(placeholder.blockId);
-    if (!target) throw new Error(`Compressed block not found: (b${placeholder.blockId})`);
-    expanded += summary.slice(cursor, placeholder.startIndex);
-    expanded += restoreSummary(target.summary);
-    cursor = placeholder.endIndex;
-    if (!consumedSeen.has(placeholder.blockId)) {
-      consumedSeen.add(placeholder.blockId);
-      consumed.push(placeholder.blockId);
+  const consumed: number[] = [];
+  const consumedSeen = new Set<number>();
+  let expanded = summary;
+  if (placeholders.length > 0) {
+    let cursor = 0;
+    expanded = "";
+    for (const placeholder of placeholders) {
+      const target = summaryByBlockId.get(placeholder.blockId);
+      if (!target) throw new Error(`Compressed block not found: (b${placeholder.blockId})`);
+      expanded += summary.slice(cursor, placeholder.startIndex);
+      expanded += restoreSummary(target.summary);
+      cursor = placeholder.endIndex;
+      if (!consumedSeen.has(placeholder.blockId)) {
+        consumedSeen.add(placeholder.blockId);
+        consumed.push(placeholder.blockId);
+      }
     }
+    expanded += summary.slice(cursor);
   }
-  expanded += summary.slice(cursor);
+
+  // When the range boundary is itself a compressed block, fold its summary in
+  // at that edge (start → prepend, end → append) and mark it consumed.
+  expanded = injectBoundarySummary(expanded, startReference, "start", summaryByBlockId, consumed, consumedSeen);
+  expanded = injectBoundarySummary(expanded, endReference, "end", summaryByBlockId, consumed, consumedSeen);
+
   return { expandedSummary: expanded, consumedBlockIds: consumed };
+}
+
+function injectBoundarySummary(
+  summary: string,
+  reference: BoundaryReference,
+  position: "start" | "end",
+  summaryByBlockId: Map<number, CompressionBlock>,
+  consumed: number[],
+  consumedSeen: Set<number>,
+): string {
+  if (reference.kind !== "compressed-block") return summary;
+  if (consumedSeen.has(reference.blockId)) return summary;
+  const target = summaryByBlockId.get(reference.blockId);
+  if (!target) throw new Error(`Compressed block not found: (b${reference.blockId})`);
+  const injectedBody = restoreSummary(target.summary);
+  const left = position === "start" ? injectedBody.trim() : summary.trim();
+  const right = position === "start" ? summary.trim() : injectedBody.trim();
+  const next = !left ? right : !right ? left : `${left}\n\n${right}`;
+  consumedSeen.add(reference.blockId);
+  consumed.push(reference.blockId);
+  return next;
 }
 
 export function appendMissingBlockSummaries(
@@ -234,12 +275,24 @@ function restoreSummary(summary: string): string {
   return after.replace(/(?:\r?\n)*<dcp-message-id>b\d+<\/dcp-message-id>\s*$/i, "").replace(/(?:\r?\n)+$/, "");
 }
 
-/** Validate that every block referenced by a placeholder is known + required. */
+/**
+ * Validate placeholders against required block ids. Boundary blocks (when the
+ * range start or end is itself a compressed block) are excluded from the
+ * "strict required" set because they are injected separately by
+ * injectBoundarySummary, not via an explicit `(b#)` placeholder.
+ */
 export function validateSummaryPlaceholders(
   placeholders: ParsedBlockPlaceholder[],
   requiredBlockIds: number[],
+  startReference: BoundaryReference,
+  endReference: BoundaryReference,
   summaryByBlockId: Map<number, CompressionBlock>,
 ): number[] {
+  const boundaryOptionalIds = new Set<number>();
+  if (startReference.kind === "compressed-block") boundaryOptionalIds.add(startReference.blockId);
+  if (endReference.kind === "compressed-block") boundaryOptionalIds.add(endReference.blockId);
+
+  const strictRequired = requiredBlockIds.filter((id) => !boundaryOptionalIds.has(id));
   const requiredSet = new Set(requiredBlockIds);
   const kept = new Set<number>();
   const valid: ParsedBlockPlaceholder[] = [];
@@ -251,5 +304,5 @@ export function validateSummaryPlaceholders(
   }
   placeholders.length = 0;
   placeholders.push(...valid);
-  return requiredBlockIds.filter((id) => !kept.has(id));
+  return strictRequired.filter((id) => !kept.has(id));
 }

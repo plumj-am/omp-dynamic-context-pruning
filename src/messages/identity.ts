@@ -91,7 +91,11 @@ function messageTextSignature(msg: AgentMessage): string {
   if (!Array.isArray(msg.content)) return "";
   let sig = "";
   for (const b of msg.content) if (isTextBlock(b)) sig += b.text;
-  return sig;
+  // Strip any injected <dcp-message-id> tags so identity is stable across the
+  // tag-injection step (assignMessageRefs computes identities before injecting
+  // the tag into text; without stripping, text-message identities would shift
+  // after the tag is appended).
+  return sig.replace(/\n?<dcp-message-id>[^<]*<\/dcp-message-id>/g, "");
 }
 
 /**

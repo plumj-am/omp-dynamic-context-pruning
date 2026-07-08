@@ -22,6 +22,8 @@ export interface SelectionResolution {
   messageIds: string[];
   toolIds: string[];
   messageTokenById: Map<string, number>;
+  /** Prior compressed blocks consumed by this range (anchor inside the span). */
+  requiredBlockIds: number[];
   startReference: BoundaryReference;
   endReference: BoundaryReference;
 }

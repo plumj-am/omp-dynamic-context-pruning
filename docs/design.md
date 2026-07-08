@@ -113,18 +113,25 @@ src/
 
 Implemented (production core):
 - `context` transform (placeholdering + summary injection) — the heart
-- compress tool, range mode (model-authored summaries, nested blocks)
+- compress tool, range mode (model-authored summaries, nested blocks incl.
+  boundary-block fold-in when a range starts/ends on an existing block)
 - strategies: deduplication, purge-errors
 - system-prompt injection + context-limit / turn / iteration nudges
 - protected tools + protected file patterns
 - protected-content appended into compression summaries
+- compress notifications via `ctx.ui.notify` (off/minimal/detailed)
 - config system (`dcp.jsonc` with layered global/project discovery)
 - state persistence across sessions via custom entries
 - slash commands: `/dcp`, `/dcp-compress [focus]`, `/dcp stats`, `/dcp context`
 
-Deferred (documented, not silently dropped):
+Deferred / consciously omitted:
 - compress `message` mode — experimental upstream; range mode is the
   production default. Tracked for follow-up.
+- per-compress permission prompt — OpenCode's `ask` flow; declined (auto preferred).
+- subagent-result extension in protected content — subagents are out of scope
+  (`experimental.allowSubAgents` defaults false).
+- manual-mode gating inside the compress tool — declined (manual mode unused).
+- compress timing/duration tracking — cosmetic; declined.
 - TUI panel — OpenCode's panel system is host-specific; omp commands cover the
   same surface.
 - npm auto-update — the plugin is local/source-installed; updates are manual.

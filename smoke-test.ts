@@ -9,7 +9,7 @@ import { prune } from "./src/messages/prune";
 import { deduplicate } from "./src/strategies/deduplication";
 import { purgeErrors } from "./src/strategies/purge-errors";
 import { applyCompressionState, wrapCompressedSummary, allocateRunId, allocateBlockId } from "./src/state/utils";
-import { buildRangeContext, resolveRanges, validateNonOverlapping, consumedBlockIdsIn } from "./src/compress/range-utils";
+import { buildRangeContext, resolveRanges, validateNonOverlapping, validateSummaryPlaceholders, injectBlockPlaceholders, parseBlockPlaceholders } from "./src/compress/range-utils";
 import { formatMessageIdTag } from "./src/messages/identity";
 import { DEFAULT_CONFIG } from "./src/config";
 import { Logger } from "./src/logger";
@@ -110,7 +110,7 @@ assert(plans[0].selection.messageIds.length >= 5, "range selection spans the exp
 const runId = allocateRunId(state);
 const blockId = allocateBlockId(state);
 const stored = wrapCompressedSummary(blockId, plans[0].entry.summary, formatBlockRef, formatMessageIdTag);
-applyCompressionState(state, { topic: args.topic, batchTopic: args.topic, startId: startRef!, endId: endRef!, mode: "range", runId, summaryTokens: 30 }, plans[0].selection, plans[0].anchorMessageId, blockId, stored, consumedBlockIdsIn(plans[0].selection, ctx));
+applyCompressionState(state, { topic: args.topic, batchTopic: args.topic, startId: startRef!, endId: endRef!, mode: "range", runId, summaryTokens: 30 }, plans[0].selection, plans[0].anchorMessageId, blockId, stored, plans[0].selection.requiredBlockIds);
 assert(state.prune.messages.activeBlockIds.size === 1, "one active compression block");
 
 const pruned2 = prune(state, logger, DEFAULT_CONFIG, work);
@@ -119,6 +119,30 @@ assert(/Compressed conversation section/.test(rendered), "summary injected into 
 assert(/Please read the config file/.test(rendered), "anchor user message preserved with summary");
 assert(!/"debug.:.true/.test(rendered), "compressed span content elided");
 console.log("\npruned2 tokens:", estimateMessagesTokens(pruned2));
+
+// 7. C4: nested compression whose START boundary is the existing block (b1).
+//    injectBoundarySummary must fold block 1's summary into the new summary.
+const firstBlockId = [...state.prune.messages.blocksById.keys()][0];
+const firstBlockRef = `b${firstBlockId}`;
+const lastDoneIdentity = ctx.identities[7];
+const lastDoneRef = state.messageIds.byRawId.get(lastDoneIdentity);
+assert(!!lastDoneRef, "last message ref resolved");
+const nestedArgs = {
+  topic: "Wrap-up including prior block",
+  content: [{ startId: firstBlockRef, endId: lastDoneRef!, summary: "Final wrap-up that also references the earlier exploration block." }],
+};
+const nestedPlans = resolveRanges(nestedArgs, ctx, state);
+const nestedPlaceholders = parseBlockPlaceholders(nestedPlans[0].entry.summary);
+const nestedMissing = validateSummaryPlaceholders(nestedPlaceholders, nestedPlans[0].selection.requiredBlockIds, nestedPlans[0].selection.startReference, nestedPlans[0].selection.endReference, ctx.summaryByBlockId);
+const nestedInjected = injectBlockPlaceholders(nestedPlans[0].entry.summary, nestedPlaceholders, ctx.summaryByBlockId, nestedPlans[0].selection.startReference, nestedPlans[0].selection.endReference);
+// boundary block (firstBlockId) should now be consumed
+assert(nestedInjected.consumedBlockIds.includes(firstBlockId), "C4: boundary block b1 consumed by nested compression");
+// its summary body should be folded in (start edge → prepended), so both the
+// boundary summary and the new summary text appear
+assert(/Explored config\.json/.test(nestedInjected.expandedSummary), "C4: boundary block summary folded into new summary");
+assert(/Final wrap-up/.test(nestedInjected.expandedSummary), "C4: new summary body preserved alongside boundary");
+assert(nestedMissing.length === 0, "C4: no missing required blocks after boundary injection");
+console.log("C4 nested consumed:", nestedInjected.consumedBlockIds, "| missing:", nestedMissing);
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILURE(S)`);
 if (failures > 0) process.exit(1);
