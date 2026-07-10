@@ -12,7 +12,6 @@ import type { PluginConfig } from "../config";
 import type { Logger } from "../logger";
 import type { SessionState } from "../state/types";
 import { allocateBlockId, allocateRunId, applyCompressionState, wrapCompressedSummary } from "../state/utils";
-import { formatBlockRef } from "../messages/identity";
 import { countTokens } from "../token-utils";
 import { DEFAULT_PROTECTED_TOOLS } from "../config";
 import { buildRangeContext, foldConsumedBlocks, resolveRanges, validateArgs, validateNonOverlapping } from "./range-utils";
@@ -74,9 +73,8 @@ export function createCompressRangeTool(deps: CompressToolDeps): ToolDefinition 
         summary = appendProtectedTools(summary, plan.selection, rangeCtx, state, [...protectedTools], config.protectedFilePatterns);
 
         const blockId = allocateBlockId(state);
-        const stored = wrapCompressedSummary(blockId, summary);
+        const stored = wrapCompressedSummary(args.topic, summary);
         const summaryTokens = countTokens(stored);
-
         const applied = applyCompressionState(
           state,
           { topic: args.topic, batchTopic: args.topic, startId: plan.entry.startAnchor, endId: plan.entry.endAnchor, mode: "range", runId, compressCallId: toolCallId, summaryTokens },
@@ -95,9 +93,8 @@ export function createCompressRangeTool(deps: CompressToolDeps): ToolDefinition 
       persist();
       notifyCompression(execCtx, config, args.topic, entries, totalCompressed);
 
-      const blockRefs = entries.map((e) => formatBlockRef(e.blockId)).join(", ");
       return {
-        content: [{ type: "text", text: `Compressed ${totalCompressed} messages into ${entries.length} summary block(s): ${blockRefs}.` } satisfies ContentBlock],
+        content: [{ type: "text", text: `Compressed ${totalCompressed} message(s) into ${entries.length} summary block(s) [${args.topic}].` } satisfies ContentBlock],
         details: { topic: args.topic, blocks: entries.map((e) => ({ blockId: e.blockId, summaryTokens: e.summaryTokens })) },
       };
     },
@@ -113,8 +110,8 @@ interface CompressEntry {
 
 /**
  * Surface a compress result via omp's UI notification. Honors `pruneNotification`:
- * "off" → silent, "minimal" → one-line metrics, "detailed" → adds topic + block
- * refs (+ summary preview when `compress.showCompression`). omp has a single
+ * "off" → silent, "minimal" → one-line metrics, "detailed" → adds topic
+ * (+ summary preview when `compress.showCompression`). omp has a single
  * notify surface, so `pruneNotificationType` ("chat" vs "toast") maps to the
  * same `ctx.ui.notify` call.
  */
@@ -130,14 +127,13 @@ function notifyCompression(
 
   const reclaimed = entries.reduce((sum, e) => sum + e.compressedTokens, 0);
   const summaryTokens = entries.reduce((sum, e) => sum + e.summaryTokens, 0);
-  const blockRefs = entries.map((e) => formatBlockRef(e.blockId)).join(", ");
 
   let message: string;
   if (config.pruneNotification === "minimal") {
     message = `DCP: compressed ${totalMessages} message(s) into ${entries.length} block(s) [${topic}] — ~${reclaimed.toLocaleString()} tokens reclaimed, +${summaryTokens.toLocaleString()} summary`;
   } else {
     message = `DCP compression [${topic}]`;
-    message += `\n→ blocks: ${blockRefs} | messages: ${totalMessages}`;
+    message += `\n→ messages: ${totalMessages}`;
     message += `\n→ ~${reclaimed.toLocaleString()} tokens reclaimed, +${summaryTokens.toLocaleString()} summary`;
     if (config.compress.showCompression && entries.length === 1) {
       const preview = entries[0]!.summary.slice(0, 600);

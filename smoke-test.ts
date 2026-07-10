@@ -101,7 +101,7 @@ assert(plans[0].selection.messageIds.length >= 5, "range selection spans the exp
 
 const runId = allocateRunId(state);
 const blockId = allocateBlockId(state);
-const stored = wrapCompressedSummary(blockId, plans[0].entry.summary);
+const stored = wrapCompressedSummary(args.topic, plans[0].entry.summary);
 applyCompressionState(state, { topic: args.topic, batchTopic: args.topic, startId: plans[0].entry.startAnchor, endId: plans[0].entry.endAnchor, mode: "range", runId, summaryTokens: 30 }, plans[0].selection, plans[0].anchorMessageId, blockId, stored, plans[0].selection.requiredBlockIds);
 assert(state.prune.messages.activeBlockIds.size === 1, "one active compression block");
 
@@ -110,13 +110,13 @@ assert(state.prune.messages.activeBlockIds.size === 1, "one active compression b
 const rebuild = messages.map((m) => ({ ...m, content: m.content.map((b) => structuredClone(b)) }));
 const pruned2 = prune(state, logger, DEFAULT_CONFIG, rebuild);
 const rendered = JSON.stringify(pruned2);
-assert(/\[Compressed conversation section · b1\]/.test(rendered), "summary injected with readable header");
+assert(/\[Compressed conversation section: Initial exploration\]/.test(rendered), "summary injected with readable header");
 assert(!/"debug.:.true/.test(rendered), "compressed span content elided");
 assert(!/<dcp-message-id>/.test(rendered), "pruned context has no dcp-message-id tags");
 console.log("\npruned2 tokens:", estimateMessagesTokens(pruned2));
 
 // 7. C4: nested compression that includes the prior summary, cited by content
-//    anchors. The prior block is auto-detected (header scan) and folded.
+//    anchors. The prior block is auto-detected (content text match) and folded.
 state.lastContextMessages = pruned2;
 const nestedCtx = buildRangeContext(pruned2, state);
 const nestedArgs = {
@@ -125,9 +125,9 @@ const nestedArgs = {
 };
 const nestedPlans = resolveRanges(nestedArgs, nestedCtx);
 validateNonOverlapping(nestedPlans);
-assert(nestedPlans[0].selection.requiredBlockIds.includes(1), "C4: prior block b1 auto-detected in cited range");
+assert(nestedPlans[0].selection.requiredBlockIds.includes(1), "C4: prior block 1 auto-detected in cited range");
 const nestedFolded = foldConsumedBlocks(nestedPlans[0].entry.summary, nestedPlans[0].selection.requiredBlockIds, nestedCtx.summaryByBlockId);
-assert(nestedFolded.consumedBlockIds.includes(1), "C4: prior block b1 consumed/folded");
+assert(nestedFolded.consumedBlockIds.includes(1), "C4: prior block 1 consumed/folded");
 assert(/Explored config\.json/.test(nestedFolded.expandedSummary), "C4: prior block summary folded into new summary");
 assert(/Final wrap-up/.test(nestedFolded.expandedSummary), "C4: new summary body preserved");
 console.log("C4 nested consumed:", nestedFolded.consumedBlockIds);

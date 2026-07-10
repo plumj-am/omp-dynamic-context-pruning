@@ -42,6 +42,8 @@ export interface RangeContext {
   toolUseIdsByIdentity: Map<string, string[]>;
   messageByIdentity: Map<string, AgentMessage>;
   summaryByBlockId: Map<number, CompressionBlock>;
+  /** Reverse lookup: active block summary text → blockId (for nesting detection). */
+  summaryToBlockId: Map<string, number>;
 }
 
 export interface InjectedSummaryResult {

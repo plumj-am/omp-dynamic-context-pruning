@@ -58,8 +58,8 @@ short verbatim phrase from its first message (`startAnchor`) and its last
 (`endAnchor`). DCP locates each anchor by substring match (whitespace- and
 case-insensitive) and takes the span between them. **Nothing is injected into
 context**, so there is nothing for the model to imitate. Prior compressed
-sections inside a cited range are auto-detected by their
-`[Compressed conversation section · b#]` header and folded.
+sections inside a cited range are auto-detected by matching their summary
+text against active blocks and folded.
 
 ## Installation
 

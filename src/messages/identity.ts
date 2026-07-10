@@ -7,9 +7,9 @@
  *  - text-only            → "txt:" + role + hash(text) + ordinal
  *
  * `assignMessageRefs` walks the context messages in order, assigns deterministic
- * m0001.. refs (stable because message order is stable), stashes the
- * ref→identity map in state for the compress tool to read, and injects
- * `<dcp-message-id>mNNNN</dcp-message-id>` tags so the model can cite ranges.
+ * m0001.. refs (stable because message order is stable), and stashes the
+ * ref→identity map in state. The model cites ranges by content anchors, not by
+ * these refs — they are kept for state consistency and tool internals.
  */
 
 import type { AgentMessage, ContentBlock } from "../omp";
@@ -18,27 +18,19 @@ import { isToolUseBlock, isToolResultBlock, isTextBlock } from "./shape";
 import { isIgnoredUserMessage } from "./query";
 
 export const MESSAGE_REF_REGEX = /^m(\d{4})$/;
-export const BLOCK_REF_REGEX = /^b([1-9]\d*)$/;
 export const MESSAGE_ID_TAG_NAME = "dcp-message-id";
 
 const MESSAGE_REF_WIDTH = 4;
 const MESSAGE_REF_MIN_INDEX = 1;
 export const MESSAGE_REF_MAX_INDEX = 9999;
 
-export type ParsedBoundaryId =
-  | { kind: "message"; ref: string; index: number }
-  | { kind: "compressed-block"; ref: string; blockId: number };
+export type ParsedBoundaryId = { kind: "message"; ref: string; index: number };
 
 export function formatMessageRef(index: number): string {
   if (!Number.isInteger(index) || index < MESSAGE_REF_MIN_INDEX || index > MESSAGE_REF_MAX_INDEX) {
     throw new Error(`Message ref index out of bounds: ${index}`);
   }
   return `m${index.toString().padStart(MESSAGE_REF_WIDTH, "0")}`;
-}
-
-export function formatBlockRef(blockId: number): string {
-  if (!Number.isInteger(blockId) || blockId < 1) throw new Error(`Invalid block id: ${blockId}`);
-  return `b${blockId}`;
 }
 
 export function parseMessageRef(ref: string): number | null {
@@ -49,19 +41,10 @@ export function parseMessageRef(ref: string): number | null {
   return index;
 }
 
-export function parseBlockRef(ref: string): number | null {
-  const match = ref.trim().toLowerCase().match(BLOCK_REF_REGEX);
-  if (!match) return null;
-  const id = Number.parseInt(match[1], 10);
-  return Number.isInteger(id) ? id : null;
-}
-
 export function parseBoundaryId(id: string): ParsedBoundaryId | null {
   const normalized = id.trim().toLowerCase();
   const messageIndex = parseMessageRef(normalized);
   if (messageIndex !== null) return { kind: "message", ref: formatMessageRef(messageIndex), index: messageIndex };
-  const blockId = parseBlockRef(normalized);
-  if (blockId !== null) return { kind: "compressed-block", ref: formatBlockRef(blockId), blockId };
   return null;
 }
 
@@ -191,13 +174,9 @@ export function assignMessageRefs(state: SessionState, messages: AgentMessage[])
   return assigned;
 }
 
-/** Resolve a model-supplied ref (m0001 / b2) to an identity, using stashed map. */
+/** Resolve a model-supplied ref (m0001) to an identity, using stashed map. */
 export function refToIdentity(state: SessionState, ref: string): string | null {
   const parsed = parseBoundaryId(ref);
   if (!parsed) return null;
-  if (parsed.kind === "compressed-block") {
-    const block = state.prune.messages.blocksById.get(parsed.blockId);
-    return block ? block.anchorMessageId : null;
-  }
   return state.messageIds.byRef.get(parsed.ref) ?? null;
 }

@@ -6,10 +6,10 @@
  * substring-matches each anchor (whitespace- and case-normalized) to a message
  * and takes the span between them.
  *
- * No per-message tags, no positional numbering, no b# refs — nothing is
+ * No per-message tags, no positional numbering, no block-id refs — nothing is
  * injected into context, so the model has nothing to imitate and pollute its
  * own output with. Prior compressed blocks nested inside a cited range are
- * auto-detected by their `[Compressed conversation section]` header and folded
+ * auto-detected by matching their summary text against active blocks and folded
  * into the new summary.
  */
 
@@ -26,8 +26,6 @@ import type {
   ResolvedRangeCompression,
   SelectionResolution,
 } from "./types";
-
-const HEADER_PREFIX = "[Compressed conversation section";
 
 export function validateArgs(args: CompressRangeToolArgs): void {
   if (typeof args.topic !== "string" || args.topic.trim().length === 0) {
@@ -89,15 +87,18 @@ function findAnchorIndex(ctx: RangeContext, anchor: string, fromIndex: number): 
   );
 }
 
-/** Parse block ids from `[Compressed conversation section · b#]` headers in a message. */
-function blockHeadersIn(msg: AgentMessage): number[] {
+/**
+ * Detect prior compressed blocks whose summary was injected into a message by
+ * matching the full text block against active blocks' stored summaries.
+ * Replaces the old `b#` header-regex approach — no numeric id needs to appear
+ * in the context text.
+ */
+function blockIdsInMessage(msg: AgentMessage, summaryToBlockId: Map<string, number>): number[] {
   const ids: number[] = [];
   for (const block of Array.isArray(msg.content) ? msg.content : []) {
     if (!isTextBlock(block)) continue;
-    for (const m of block.text.matchAll(/\[Compressed conversation section · b(\d+)\]/gi)) {
-      const id = Number.parseInt(m[1] ?? "", 10);
-      if (Number.isInteger(id) && !ids.includes(id)) ids.push(id);
-    }
+    const id = summaryToBlockId.get(block.text);
+    if (id !== undefined && !ids.includes(id)) ids.push(id);
   }
   return ids;
 }
@@ -122,6 +123,13 @@ export function buildRangeContext(messages: AgentMessage[], state: SessionState)
     if (toolIds.length > 0) toolUseIdsByIdentity.set(identity, toolIds);
   }
 
+  // Reverse lookup: active block summary text → blockId. Used to detect prior
+  // compressed blocks whose injected summary falls inside a cited range.
+  const summaryToBlockId = new Map<string, number>();
+  for (const [blockId, block] of state.prune.messages.blocksById) {
+    if (block.active && typeof block.summary === "string") summaryToBlockId.set(block.summary, blockId);
+  }
+
   return {
     identities,
     messages,
@@ -130,6 +138,7 @@ export function buildRangeContext(messages: AgentMessage[], state: SessionState)
     toolUseIdsByIdentity,
     messageByIdentity,
     summaryByBlockId: state.prune.messages.blocksById,
+    summaryToBlockId,
   };
 }
 
@@ -149,7 +158,7 @@ function resolveSelection(ctx: RangeContext, startIndex: number, endIndex: numbe
       const ids = ctx.toolUseIdsByIdentity.get(identity);
       if (ids) for (const id of ids) if (!toolIds.includes(id)) toolIds.push(id);
     }
-    for (const blockId of blockHeadersIn(ctx.messages[i])) {
+    for (const blockId of blockIdsInMessage(ctx.messages[i], ctx.summaryToBlockId)) {
       if (!requiredBlockIds.includes(blockId)) requiredBlockIds.push(blockId);
     }
   }
@@ -211,16 +220,16 @@ export function foldConsumedBlocks(
     const target = summaryByBlockId.get(blockId);
     if (!target) continue;
     consumed.push(blockId);
-    missing.push(`\n### (b${blockId})\n${restoreSummary(target.summary)}`);
+    missing.push(`\n### Previously compressed: ${target.topic}\n${restoreSummary(target.summary)}`);
   }
   if (missing.length === 0) return { expandedSummary: summary, consumedBlockIds: consumed };
   const heading = "\n\nThe following previously compressed summaries were also part of this conversation section:";
   return { expandedSummary: summary + heading + missing.join(""), consumedBlockIds: consumed };
 }
 
-/** Strip the `[Compressed conversation section · b#]` header from a stored summary. */
+/** Strip the `[Compressed conversation section...]` header from a stored summary. */
 function restoreSummary(summary: string): string {
-  const headerMatch = summary.match(/^\s*\[Compressed conversation section(?: · b\d+)?\]/i);
+  const headerMatch = summary.match(/^\s*\[Compressed conversation section[^\]]*\]/i);
   if (!headerMatch) return summary;
   return summary.slice(headerMatch[0].length).replace(/^(?:\r?\n)+/, "").replace(/(?:\r?\n)+$/, "");
 }

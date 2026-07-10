@@ -28,15 +28,15 @@ export function allocateRunId(state: SessionState): number {
 }
 
 /**
- * Wrap a model-authored summary with a readable header carrying the block id
- * (e.g. `[Compressed conversation section · b2]`). The id in the header is how
- * the model cites the block for nesting — no `<dcp-message-id>` XML tags are
- * used anywhere, because omp surfaces context-hook output into the display and
- * those tags leaked to the user.
+ * Wrap a model-authored summary with a readable header carrying the topic
+ * (e.g. `[Compressed conversation section: Auth System]`). The topic gives
+ * human-readable identity to the block without a session-ambiguous numeric id.
+ * No `<dcp-message-id>` XML tags are used anywhere, because omp surfaces
+ * context-hook output into the display and those tags leaked to the user.
  */
-export function wrapCompressedSummary(blockId: number, summary: string): string {
+export function wrapCompressedSummary(topic: string, summary: string): string {
   const body = summary.trim();
-  const header = `[Compressed conversation section · b${blockId}]`;
+  const header = `[Compressed conversation section: ${topic}]`;
   return body.length === 0 ? header : `${header}\n${body}`;
 }
 
