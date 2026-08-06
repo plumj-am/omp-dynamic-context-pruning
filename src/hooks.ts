@@ -2,8 +2,9 @@
  * omp event handlers wiring the DCP pipeline into the live session.
  *
  * `createContextMenuHandler` is the heart: every provider request it rebuilds
- * tool metadata, runs the strategies, assigns m-refs, prunes, and nudges — on a
- * clone of the messages, never touching storage.
+ * tool metadata, runs the strategies, assigns m-refs, prunes, injects the DCP
+ * system block, and nudges — on a clone of the messages, never touching
+ * storage.
  */
 
 import type { AgentMessage, ExtensionAPI, ContextEvent, ExtensionContext, SessionEntry } from "./omp";
@@ -27,7 +28,28 @@ export interface HandlerDeps {
   config: PluginConfig;
   pi: ExtensionAPI;
   counters: { contextFetch: number };
-  systemInjectedFor: string | null;
+}
+
+/**
+ * Inject the DCP system-prompt block into the LLM-bound message stream.
+ *
+ * Upstream OpenCode re-injects its DCP system block on every provider request
+ * via `experimental.chat.system.transform`. omp has no system-transform hook,
+ * so we do the faithful equivalent here: prepend the block as a system message
+ * on the `context` event's copy on every pass. LLM-only (the context event is
+ * never written to storage or the display transcript), and it survives omp's
+ * own compaction — which would otherwise wipe any once-per-session guidance.
+ *
+ * Prepending to `messages` keeps the synthetic summary (role "user") and the
+ * nudge logic untouched. Returns the possibly-new array.
+ */
+export function injectSystemPrompt(messages: AgentMessage[]): AgentMessage[] {
+  const system = messages.find((m) => m.role === "system");
+  if (system) return messages; // a system message is already present; nothing to add
+  return [
+    { role: "system", content: [{ type: "text", text: SYSTEM_PROMPT_BLOCK }] },
+    ...messages,
+  ];
 }
 
 function isCompactionEntry(e: SessionEntry): boolean {
@@ -105,8 +127,12 @@ export function createContextMenuHandler(deps: HandlerDeps) {
     deps.counters.contextFetch += 1;
     injectCompressNudges(deps.state, deps.config, estimateMessagesTokens(pruned), pruned, deps.counters.contextFetch);
 
-    deps.logger.saveContext(deps.state.sessionId ?? "session", pruned);
-    return { messages: pruned };
+    // Per-request system guidance (upstream parity): always present in the
+    // LLM-bound stream, never persisted, immune to omp compaction.
+    const withSystem = injectSystemPrompt(pruned);
+
+    deps.logger.saveContext(deps.state.sessionId ?? "session", withSystem);
+    return { messages: withSystem };
   };
 }
 
@@ -124,19 +150,6 @@ export function createSessionStartHandler(deps: HandlerDeps) {
     const entries = ctx.sessionManager?.getBranch?.() ?? [];
     loadSessionState(entries, deps.state);
     deps.state.lastCompaction = latestCompactionTimestamp(entries);
-
-    // one-time DCP orientation message
-    if (deps.config.compress.permission !== "deny" && sessionId && deps.systemInjectedFor !== sessionId) {
-      deps.systemInjectedFor = sessionId;
-      try {
-        deps.pi.sendCustomMessage?.(
-          { customType: "dcp-system", content: SYSTEM_PROMPT_BLOCK, display: false, attribution: "agent" },
-          { deliverAs: "nextTurn" },
-        );
-      } catch {
-        /* best-effort */
-      }
-    }
   };
 }
 

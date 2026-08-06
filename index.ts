@@ -38,7 +38,6 @@ export default function dcpExtension(pi: ExtensionAPI): void {
     config,
     pi,
     counters: { contextFetch: 0 },
-    systemInjectedFor: null as string | null,
   };
   // Core pipeline + lifecycle
   pi.on("context", createContextMenuHandler(deps));

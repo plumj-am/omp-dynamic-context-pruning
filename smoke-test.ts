@@ -10,6 +10,7 @@ import { deduplicate } from "./src/strategies/deduplication";
 import { purgeErrors } from "./src/strategies/purge-errors";
 import { applyCompressionState, wrapCompressedSummary, allocateRunId, allocateBlockId } from "./src/state/utils";
 import { buildRangeContext, resolveRanges, validateNonOverlapping, foldConsumedBlocks } from "./src/compress/range-utils";
+import { injectSystemPrompt } from "./src/hooks";
 import { DEFAULT_CONFIG } from "./src/config";
 import { Logger } from "./src/logger";
 import { estimateMessagesTokens } from "./src/token-utils";
@@ -131,3 +132,16 @@ assert(nestedFolded.consumedBlockIds.includes(1), "C4: prior block 1 consumed/fo
 assert(/Explored config\.json/.test(nestedFolded.expandedSummary), "C4: prior block summary folded into new summary");
 assert(/Final wrap-up/.test(nestedFolded.expandedSummary), "C4: new summary body preserved");
 console.log("C4 nested consumed:", nestedFolded.consumedBlockIds);
+// 8. Per-request system injection: the DCP system block is prepended to the
+//    LLM-bound stream on every context pass (upstream parity), and is
+//    idempotent - an existing system message is left alone.
+const sysInjected = injectSystemPrompt(pruned2);
+assert(sysInjected[0]?.role === "system", "system block prepended as first message");
+assert(
+  Array.isArray(sysInjected[0]?.content) &&
+    typeof (sysInjected[0]?.content[0] as { text?: string })?.text === "string" &&
+    /Dynamic Context Pruning/.test((sysInjected[0]?.content[0] as { text?: string })?.text ?? ""),
+  "system block contains DCP guidance",
+);
+const sysInjected2 = injectSystemPrompt(sysInjected);
+assert(sysInjected2.length === sysInjected.length, "system injection idempotent (no duplicate block)");
