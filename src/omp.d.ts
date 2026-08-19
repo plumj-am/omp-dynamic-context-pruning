@@ -227,8 +227,8 @@ export interface ExtensionAPI {
   /** Persist a non-LLM custom entry on the session (rebuilt from getBranch() on session_start). */
   appendEntry(customType: string, data: unknown): Promise<void> | void;
 
-  /** Inject a custom message into the live conversation. */
-  sendCustomMessage?(message: { customType: string; content: string | ContentBlock[]; display?: boolean; attribution?: "user" | "agent" }, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean }): Promise<void> | void;
+  /** Send a custom message to the session (omp's real API — `sendCustomMessage` does NOT exist). */
+  sendMessage(message: { customType: string; content: string | ContentBlock[]; display?: boolean; details?: unknown; attribution?: "user" | "agent" }, options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean }): void;
 
   /** Package exports (full omp surface). */
   pi: Record<string, unknown>;
