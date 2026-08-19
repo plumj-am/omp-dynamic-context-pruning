@@ -134,14 +134,14 @@ assert(/Final wrap-up/.test(nestedFolded.expandedSummary), "C4: new summary body
 console.log("C4 nested consumed:", nestedFolded.consumedBlockIds);
 // 8. Per-request system injection: the DCP system block is prepended to the
 //    LLM-bound stream on every context pass (upstream parity), and is
-//    idempotent - an existing system message is left alone.
+//    idempotent - an existing developer message is left alone.
 const sysInjected = injectSystemPrompt(pruned2);
-assert(sysInjected[0]?.role === "system", "system block prepended as first message");
+assert(sysInjected[0]?.role === "developer", "DCP block prepended as developer message");
 assert(
   Array.isArray(sysInjected[0]?.content) &&
     typeof (sysInjected[0]?.content[0] as { text?: string })?.text === "string" &&
     /Dynamic Context Pruning/.test((sysInjected[0]?.content[0] as { text?: string })?.text ?? ""),
-  "system block contains DCP guidance",
+  "developer block contains DCP guidance",
 );
 const sysInjected2 = injectSystemPrompt(sysInjected);
-assert(sysInjected2.length === sysInjected.length, "system injection idempotent (no duplicate block)");
+assert(sysInjected2.length === sysInjected.length, "injection idempotent (no duplicate block)");

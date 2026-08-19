@@ -20,7 +20,7 @@ This is the heart of the plugin and the direct analogue of DCP's
 | DCP (OpenCode)                        | omp extension                                              |
 | ------------------------------------- | ---------------------------------------------------------- |
 | `experimental.chat.messages.transform`| `pi.on("context", ...)` → `{ messages }`                   |
-| `experimental.chat.system.transform`  | system-prompt append via injected custom message + tool description |
+| `experimental.chat.system.transform`  | per-request `developer`-role message prepended in the `context` event (LLM-only; omp drops `system`-role messages in `convertToLlm`) |
 | `tool.compress`                       | `pi.registerTool({ name: "compress" })`                    |
 | `command.execute.before`              | `pi.registerCommand(...)`                                  |
 | `event`                               | `pi.on("session_start" / "tool_result" / ...)`             |

@@ -35,19 +35,26 @@ export interface HandlerDeps {
  *
  * Upstream OpenCode re-injects its DCP system block on every provider request
  * via `experimental.chat.system.transform`. omp has no system-transform hook,
- * so we do the faithful equivalent here: prepend the block as a system message
- * on the `context` event's copy on every pass. LLM-only (the context event is
- * never written to storage or the display transcript), and it survives omp's
- * own compaction — which would otherwise wipe any once-per-session guidance.
+ * so we do the faithful equivalent here: prepend the block on the `context`
+ * event's copy on every pass. LLM-only (the context event is never written to
+ * storage or the display transcript), and it survives omp's own compaction —
+ * which would otherwise wipe any once-per-session guidance.
  *
- * Prepending to `messages` keeps the synthetic summary (role "user") and the
- * nudge logic untouched. Returns the possibly-new array.
+ * Role: `developer` (NOT `system`). omp's `convertToLlm`/`convertOne` has no
+ * `system` case — a system-role message silently falls through the `default`
+ * branch and is dropped before reaching the provider. `developer` is preserved
+ * (`convertMessageToLlm` case "developer") and maps to the system slot on
+ * Anthropic/OpenAI-compatible providers. `user` would also survive but reads
+ * as a user turn; `developer` is the faithful system-slot analogue.
+ *
+ * Idempotent: skips when a message with the same role is already present.
+ * Returns the possibly-new array.
  */
 export function injectSystemPrompt(messages: AgentMessage[]): AgentMessage[] {
-  const system = messages.find((m) => m.role === "system");
-  if (system) return messages; // a system message is already present; nothing to add
+  const existing = messages.find((m) => m.role === "developer");
+  if (existing) return messages; // DCP guidance already present; nothing to add
   return [
-    { role: "system", content: [{ type: "text", text: SYSTEM_PROMPT_BLOCK }] },
+    { role: "developer", content: [{ type: "text", text: SYSTEM_PROMPT_BLOCK }] },
     ...messages,
   ];
 }
